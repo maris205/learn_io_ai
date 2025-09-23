@@ -1,0 +1,15 @@
+# 将 --index-url 替换为 --extra-index-url
+# 这会告诉 pip 在默认的 PyPI 仓库之外，也去 PyTorch 的仓库寻找包
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# PyTorch 相关的包会从上面的 extra-index-url 找到
+torch
+torchvision
+torchaudio
+
+# 其他的包会从默认的 PyPI 仓库找到
+jupyterlab
+pandas
+scikit-learn
+matplotlib
+ipywidgets
