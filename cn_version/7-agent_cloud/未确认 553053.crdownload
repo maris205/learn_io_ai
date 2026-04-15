@@ -1,0 +1,456 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# IO Cloud Agent Cloud — MCP 教学案例\n",
+    "\n",
+    "## 什么是 Agent Cloud？\n",
+    "\n",
+    "[io.net](https://io.net) 提供了一个 **MCP (Model Context Protocol) 服务器**，让 AI 代理（Claude Code、Cursor、Windsurf 等）可以通过自然语言直接管理去中心化 GPU 基础设施。\n",
+    "\n",
+    "**本教程你将学到：**\n",
+    "\n",
+    "| 步骤 | 功能 | 是否花钱 |\n",
+    "|------|------|----------|\n",
+    "| 1 | 连接 MCP 服务器，列出所有可用工具 | 免费 |\n",
+    "| 2 | 浏览 CaaS 硬件目录 | 免费 |\n",
+    "| 3 | 估算部署价格 | 免费 |\n",
+    "| 4 | **部署一个最便宜的容器** | **花钱** |\n",
+    "| 5 | 查看部署状态 & 容器详情 | 免费 |\n",
+    "| 6 | 列出所有部署 | 免费 |\n",
+    "| 7 | **销毁部署（省钱！）** | 免费 |\n",
+    "\n",
+    "> 注意：步骤 4 会产生实际费用，我们会选最便宜的配置（1 GPU、1 副本、1 小时），并在最后及时销毁。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 0. 环境准备"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "# 如果需要代理才能访问外网，取消下面两行的注释\n",
+    "# os.environ['http_proxy']  = 'http://127.0.0.1:7890'\n",
+    "# os.environ['https_proxy'] = 'http://127.0.0.1:7890'"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import asyncio, json, time\n",
+    "from mcp import ClientSession\n",
+    "from mcp.client.streamable_http import streamablehttp_client\n",
+    "\n",
+    "# ============================================================\n",
+    "#  填入你的 io.net API Key（需要 io-cloud project 权限）\n",
+    "# ============================================================\n",
+    "API_KEY = 'io-v2-***'\n",
+    "\n",
+    "MCP_URL = 'https://mcp.io.solutions/mcp'\n",
+    "HEADERS = {'x-api-key': API_KEY}\n",
+    "\n",
+    "print('OK')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 辅助函数"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "async def call_tool(tool_name, arguments=None, retries=3):\n",
+    "    \"\"\"连接 MCP 服务器并调用指定工具，带重试。\"\"\"\n",
+    "    for attempt in range(retries):\n",
+    "        try:\n",
+    "            async with streamablehttp_client(MCP_URL, headers=HEADERS, timeout=60) as (r, w, _):\n",
+    "                async with ClientSession(r, w) as session:\n",
+    "                    await session.initialize()\n",
+    "                    result = await session.call_tool(tool_name, arguments=arguments or {})\n",
+    "                    text = result.content[0].text if result.content else ''\n",
+    "                    try:\n",
+    "                        return json.loads(text)\n",
+    "                    except json.JSONDecodeError:\n",
+    "                        return text\n",
+    "        except Exception as e:\n",
+    "            if attempt < retries - 1:\n",
+    "                print(f'  重试 {attempt+1}/{retries}: {type(e).__name__}')\n",
+    "                await asyncio.sleep(2)\n",
+    "            else:\n",
+    "                raise\n",
+    "\n",
+    "\n",
+    "async def list_all_tools():\n",
+    "    async with streamablehttp_client(MCP_URL, headers=HEADERS, timeout=60) as (r, w, _):\n",
+    "        async with ClientSession(r, w) as session:\n",
+    "            await session.initialize()\n",
+    "            tools = await session.list_tools()\n",
+    "            return tools.tools\n",
+    "\n",
+    "\n",
+    "def pretty(obj):\n",
+    "    print(json.dumps(obj, indent=2, ensure_ascii=False))\n",
+    "\n",
+    "\n",
+    "def extract_data(resp):\n",
+    "    \"\"\"从嵌套的 data.data 结构中提取实际数据。\"\"\"\n",
+    "    if isinstance(resp, dict) and 'data' in resp:\n",
+    "        inner = resp['data']\n",
+    "        if isinstance(inner, dict) and 'data' in inner:\n",
+    "            return inner['data']\n",
+    "        return inner\n",
+    "    return resp\n",
+    "\n",
+    "\n",
+    "print('OK')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 1. 连接 MCP 服务器 - 列出所有可用工具 (免费)\n",
+    "\n",
+    "先确认能连上，同时了解 IO Cloud 提供了哪些能力。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "tools = await list_all_tools()\n",
+    "\n",
+    "print(f'共发现 {len(tools)} 个工具:')\n",
+    "print()\n",
+    "for t in tools:\n",
+    "    prefix = '[CaaS]' if t.name.startswith('caas') else '[VMaaS]'\n",
+    "    print(f'  {prefix}  {t.name}')\n",
+    "    print(f'          {t.description}')\n",
+    "    print()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 2. 浏览 CaaS 硬件目录 (免费)\n",
+    "\n",
+    "使用 `caas_get_hardware_ids` 查看当前可用的 GPU 型号、价格、库存。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "caas_hw = await call_tool('caas_get_hardware_ids')\n",
+    "items = extract_data(caas_hw)\n",
+    "\n",
+    "# items 可能是 list 或 dict，统一处理\n",
+    "if isinstance(items, dict):\n",
+    "    items = list(items.values()) if not any(isinstance(v, list) for v in items.values()) else next(v for v in items.values() if isinstance(v, list))\n",
+    "\n",
+    "print(f'共 {len(items)} 种硬件配置')\n",
+    "print()\n",
+    "\n",
+    "# 按价格排序\n",
+    "sorted_items = sorted(items, key=lambda x: x.get('price', 999) if isinstance(x, dict) else 999)\n",
+    "\n",
+    "print(f'{\"GPU\":<25} {\"hw_id\":<8} {\"$/hr\":<10} {\"avail\":<8} {\"location\":<8}')\n",
+    "print('-' * 65)\n",
+    "for it in sorted_items[:15]:\n",
+    "    if isinstance(it, dict):\n",
+    "        print(f'{str(it.get(\"hardware_name\",\"?\")):<25} '\n",
+    "              f'{str(it.get(\"hardware_id\",\"?\")):<8} '\n",
+    "              f'${it.get(\"price\",0):<9.2f} '\n",
+    "              f'{str(it.get(\"available\",\"?\")):<8} '\n",
+    "              f'{str(it.get(\"location\",\"-\")):<8}')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 3. 估算部署价格 (免费)\n",
+    "\n",
+    "在真正花钱之前，用 `caas_get_price_estimate` 先算一下要花多少。\n",
+    "\n",
+    "我们选择 RTX 4090 (hw_id=12)，在美国 (location_id=2)，1 GPU、1 副本、1 小时。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# RTX 4090: hardware_id=12, 美国: location_id=2\n",
+    "# 这些是经过验证的可用参数\n",
+    "HW_ID = 12       # GeForce RTX 4090, ~$0.30/hr\n",
+    "LOCATION_ID = 2  # United States\n",
+    "\n",
+    "price_est = await call_tool('caas_get_price_estimate', {\n",
+    "    'location_ids': [LOCATION_ID],\n",
+    "    'hardware_id': HW_ID,\n",
+    "    'duration_hours': 1,\n",
+    "    'gpus_per_container': 1,\n",
+    "    'replica_count': 1\n",
+    "})\n",
+    "\n",
+    "print('价格估算：')\n",
+    "pretty(price_est)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 4. 部署一个容器（会花钱！）\n",
+    "\n",
+    "现在我们来真正部署！配置：\n",
+    "- **硬件**：RTX 4090 (hw_id=12)\n",
+    "- **镜像**：`nginx:latest`\n",
+    "- **规格**：1 GPU、1 副本、1 小时\n",
+    "\n",
+    "> **运行此 Cell 会产生真实费用**。完成后请务必执行后面的“销毁部署”步骤！"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "deployment_name = f'tutorial-demo-{int(time.time()) % 100000}'\n",
+    "\n",
+    "deploy_result = await call_tool('caas_deploy_container', {\n",
+    "    'request': {\n",
+    "        'resource_private_name': deployment_name,\n",
+    "        'duration_hours': 1,\n",
+    "        'gpus_per_container': 1,\n",
+    "        'hardware_id': HW_ID,\n",
+    "        'replica_count': 1,\n",
+    "        'traffic_port': 80,\n",
+    "        'image_url': 'nginx:latest',\n",
+    "        'location_ids': [LOCATION_ID]\n",
+    "    }\n",
+    "})\n",
+    "\n",
+    "print(f'部署请求已发送！名称: {deployment_name}')\n",
+    "print()\n",
+    "pretty(deploy_result)\n",
+    "\n",
+    "# 提取 deployment_id\n",
+    "deployment_id = None\n",
+    "dep_data = extract_data(deploy_result)\n",
+    "if isinstance(dep_data, dict):\n",
+    "    deployment_id = dep_data.get('id') or dep_data.get('deployment_id')\n",
+    "elif isinstance(deploy_result, dict):\n",
+    "    deployment_id = deploy_result.get('id') or deploy_result.get('deployment_id')\n",
+    "\n",
+    "print(f'\\nDeployment ID: {deployment_id}')\n",
+    "print('（请记住此 ID，后面查看状态和销毁都要用）')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 5. 查看部署状态 & 容器详情 (免费)\n",
+    "\n",
+    "部署提交后，容器需要一些时间启动。我们来检查状态。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if deployment_id:\n",
+    "    status = await call_tool('caas_get_deployment', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print(f'部署 {deployment_id} 的状态：')\n",
+    "    print()\n",
+    "    pretty(status)\n",
+    "else:\n",
+    "    print('没有找到 deployment_id，请检查上一步的部署结果')\n",
+    "    print('你可以手动设置: deployment_id = \"你的ID\"')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 查看容器/Worker 详情\n",
+    "if deployment_id:\n",
+    "    containers = await call_tool('caas_get_deployment_containers', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print(f'部署 {deployment_id} 的容器列表：')\n",
+    "    print()\n",
+    "    pretty(containers)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 6. 列出所有部署 (免费)\n",
+    "\n",
+    "查看你账号下的所有 CaaS 部署。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "all_deployments = await call_tool('caas_list_deployments', {\n",
+    "    'page': 1,\n",
+    "    'page_size': 5\n",
+    "})\n",
+    "\n",
+    "print('我的所有 CaaS 部署：')\n",
+    "print()\n",
+    "pretty(all_deployments)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 7. 销毁部署（省钱！）\n",
+    "\n",
+    "> **重要**：教程完成后务必销毁部署，否则会持续计费直到 `duration_hours` 到期！"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if deployment_id:\n",
+    "    destroy_result = await call_tool('caas_destroy_deployment', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print(f'销毁部署 {deployment_id}：')\n",
+    "    print()\n",
+    "    pretty(destroy_result)\n",
+    "else:\n",
+    "    print('没有 deployment_id')\n",
+    "    print('如果你知道 ID，可以手动执行：')\n",
+    "    print('deployment_id = \"你的ID\"  # 填入后重新运行此 Cell')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 确认已销毁\n",
+    "if deployment_id:\n",
+    "    final_status = await call_tool('caas_get_deployment', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print('销毁后的状态：')\n",
+    "    print()\n",
+    "    pretty(final_status)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 总结\n",
+    "\n",
+    "本教程演示了 IO Cloud MCP 服务器的核心功能：\n",
+    "\n",
+    "| 工具 | 用途 |\n",
+    "|------|------|\n",
+    "| `caas_get_hardware_ids` | 查看 CaaS 支持的硬件类型和价格 |\n",
+    "| `caas_get_price_estimate` | 部署前估算价格 |\n",
+    "| `caas_deploy_container` | 部署容器集群 |\n",
+    "| `caas_get_deployment` | 查看单个部署的详细状态 |\n",
+    "| `caas_get_deployment_containers` | 查看部署内的容器/Worker |\n",
+    "| `caas_list_deployments` | 列出所有部署 |\n",
+    "| `caas_destroy_deployment` | 销毁部署，停止计费 |\n",
+    "\n",
+    "### 在 AI 代理中使用\n",
+    "\n",
+    "以上所有操作，都可以通过自然语言让 AI 代理完成，例如：\n",
+    "\n",
+    "```\n",
+    "\"帮我找最便宜的 4 卡 H100 集群并部署我的 PyTorch 镜像\"\n",
+    "\"列出我当前所有运行中的容器\"\n",
+    "\"把 tutorial-demo 那个部署销毁掉\"\n",
+    "```"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.12.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}

@@ -1,0 +1,456 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# IO Cloud Agent Cloud — MCP Tutorial\n",
+    "\n",
+    "## What is Agent Cloud?\n",
+    "\n",
+    "[io.net](https://io.net) provides an **MCP (Model Context Protocol) server** that allows AI agents (Claude Code, Cursor, Windsurf, etc.) to manage decentralized GPU infrastructure directly through natural language.\n",
+    "\n",
+    "**What you will learn in this tutorial:**\n",
+    "\n",
+    "| Step | Feature | Cost |\n",
+    "|------|---------|------|\n",
+    "| 1 | Connect to the MCP server and list all available tools | Free |\n",
+    "| 2 | Browse the CaaS hardware catalog | Free |\n",
+    "| 3 | Estimate deployment price | Free |\n",
+    "| 4 | **Deploy the cheapest container** | **Costs money** |\n",
+    "| 5 | Check deployment status & container details | Free |\n",
+    "| 6 | List all deployments | Free |\n",
+    "| 7 | **Destroy the deployment (save money!)** | Free |\n",
+    "\n",
+    "> Note: Step 4 incurs real charges. We will choose the cheapest configuration (1 GPU, 1 replica, 1 hour) and destroy it promptly at the end."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 0. Environment Setup"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "# Uncomment the following two lines if you need a proxy to access the internet\n",
+    "# os.environ['http_proxy']  = 'http://127.0.0.1:7890'\n",
+    "# os.environ['https_proxy'] = 'http://127.0.0.1:7890'"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import asyncio, json, time\n",
+    "from mcp import ClientSession\n",
+    "from mcp.client.streamable_http import streamablehttp_client\n",
+    "\n",
+    "# ============================================================\n",
+    "#  Enter your io.net API Key (requires io-cloud project permissions)\n",
+    "# ============================================================\n",
+    "API_KEY = 'io-v2-*****'\n",
+    "\n",
+    "MCP_URL = 'https://mcp.io.solutions/mcp'\n",
+    "HEADERS = {'x-api-key': API_KEY}\n",
+    "\n",
+    "print('OK')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Helper Functions"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "async def call_tool(tool_name, arguments=None, retries=3):\n",
+    "    \"\"\"Connect to the MCP server and call the specified tool, with retries.\"\"\"\n",
+    "    for attempt in range(retries):\n",
+    "        try:\n",
+    "            async with streamablehttp_client(MCP_URL, headers=HEADERS, timeout=60) as (r, w, _):\n",
+    "                async with ClientSession(r, w) as session:\n",
+    "                    await session.initialize()\n",
+    "                    result = await session.call_tool(tool_name, arguments=arguments or {})\n",
+    "                    text = result.content[0].text if result.content else ''\n",
+    "                    try:\n",
+    "                        return json.loads(text)\n",
+    "                    except json.JSONDecodeError:\n",
+    "                        return text\n",
+    "        except Exception as e:\n",
+    "            if attempt < retries - 1:\n",
+    "                print(f'  Retry {attempt+1}/{retries}: {type(e).__name__}')\n",
+    "                await asyncio.sleep(2)\n",
+    "            else:\n",
+    "                raise\n",
+    "\n",
+    "\n",
+    "async def list_all_tools():\n",
+    "    async with streamablehttp_client(MCP_URL, headers=HEADERS, timeout=60) as (r, w, _):\n",
+    "        async with ClientSession(r, w) as session:\n",
+    "            await session.initialize()\n",
+    "            tools = await session.list_tools()\n",
+    "            return tools.tools\n",
+    "\n",
+    "\n",
+    "def pretty(obj):\n",
+    "    print(json.dumps(obj, indent=2, ensure_ascii=False))\n",
+    "\n",
+    "\n",
+    "def extract_data(resp):\n",
+    "    \"\"\"Extract actual data from the nested data.data structure.\"\"\"\n",
+    "    if isinstance(resp, dict) and 'data' in resp:\n",
+    "        inner = resp['data']\n",
+    "        if isinstance(inner, dict) and 'data' in inner:\n",
+    "            return inner['data']\n",
+    "        return inner\n",
+    "    return resp\n",
+    "\n",
+    "\n",
+    "print('OK')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 1. Connect to the MCP Server - List All Available Tools (Free)\n",
+    "\n",
+    "First, confirm we can connect, and see what capabilities IO Cloud provides."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "tools = await list_all_tools()\n",
+    "\n",
+    "print(f'Found {len(tools)} tools in total:')\n",
+    "print()\n",
+    "for t in tools:\n",
+    "    prefix = '[CaaS]' if t.name.startswith('caas') else '[VMaaS]'\n",
+    "    print(f'  {prefix}  {t.name}')\n",
+    "    print(f'          {t.description}')\n",
+    "    print()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 2. Browse the CaaS Hardware Catalog (Free)\n",
+    "\n",
+    "Use `caas_get_hardware_ids` to view currently available GPU models, prices, and inventory."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "caas_hw = await call_tool('caas_get_hardware_ids')\n",
+    "items = extract_data(caas_hw)\n",
+    "\n",
+    "# items may be a list or dict; normalize\n",
+    "if isinstance(items, dict):\n",
+    "    items = list(items.values()) if not any(isinstance(v, list) for v in items.values()) else next(v for v in items.values() if isinstance(v, list))\n",
+    "\n",
+    "print(f'{len(items)} hardware configurations in total')\n",
+    "print()\n",
+    "\n",
+    "# Sort by price\n",
+    "sorted_items = sorted(items, key=lambda x: x.get('price', 999) if isinstance(x, dict) else 999)\n",
+    "\n",
+    "print(f'{\"GPU\":<25} {\"hw_id\":<8} {\"$/hr\":<10} {\"avail\":<8} {\"location\":<8}')\n",
+    "print('-' * 65)\n",
+    "for it in sorted_items[:15]:\n",
+    "    if isinstance(it, dict):\n",
+    "        print(f'{str(it.get(\"hardware_name\",\"?\")):<25} '\n",
+    "              f'{str(it.get(\"hardware_id\",\"?\")):<8} '\n",
+    "              f'${it.get(\"price\",0):<9.2f} '\n",
+    "              f'{str(it.get(\"available\",\"?\")):<8} '\n",
+    "              f'{str(it.get(\"location\",\"-\")):<8}')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 3. Estimate Deployment Price (Free)\n",
+    "\n",
+    "Before spending any money, use `caas_get_price_estimate` to calculate the cost.\n",
+    "\n",
+    "We choose RTX 4090 (hw_id=12), in the US (location_id=2), 1 GPU, 1 replica, 1 hour."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# RTX 4090: hardware_id=12, US: location_id=2\n",
+    "# These are verified available parameters\n",
+    "HW_ID = 12       # GeForce RTX 4090, ~$0.30/hr\n",
+    "LOCATION_ID = 2  # United States\n",
+    "\n",
+    "price_est = await call_tool('caas_get_price_estimate', {\n",
+    "    'location_ids': [LOCATION_ID],\n",
+    "    'hardware_id': HW_ID,\n",
+    "    'duration_hours': 1,\n",
+    "    'gpus_per_container': 1,\n",
+    "    'replica_count': 1\n",
+    "})\n",
+    "\n",
+    "print('Price estimate:')\n",
+    "pretty(price_est)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 4. Deploy a Container (Costs Money!)\n",
+    "\n",
+    "Now let's actually deploy! Configuration:\n",
+    "- **Hardware**: RTX 4090 (hw_id=12)\n",
+    "- **Image**: `nginx:latest`\n",
+    "- **Specs**: 1 GPU, 1 replica, 1 hour\n",
+    "\n",
+    "> **Running this cell will incur real charges**. Make sure to execute the \"Destroy Deployment\" step afterwards!"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "deployment_name = f'tutorial-demo-{int(time.time()) % 100000}'\n",
+    "\n",
+    "deploy_result = await call_tool('caas_deploy_container', {\n",
+    "    'request': {\n",
+    "        'resource_private_name': deployment_name,\n",
+    "        'duration_hours': 1,\n",
+    "        'gpus_per_container': 1,\n",
+    "        'hardware_id': HW_ID,\n",
+    "        'replica_count': 1,\n",
+    "        'traffic_port': 80,\n",
+    "        'image_url': 'nginx:latest',\n",
+    "        'location_ids': [LOCATION_ID]\n",
+    "    }\n",
+    "})\n",
+    "\n",
+    "print(f'Deployment request sent! Name: {deployment_name}')\n",
+    "print()\n",
+    "pretty(deploy_result)\n",
+    "\n",
+    "# Extract deployment_id\n",
+    "deployment_id = None\n",
+    "dep_data = extract_data(deploy_result)\n",
+    "if isinstance(dep_data, dict):\n",
+    "    deployment_id = dep_data.get('id') or dep_data.get('deployment_id')\n",
+    "elif isinstance(deploy_result, dict):\n",
+    "    deployment_id = deploy_result.get('id') or deploy_result.get('deployment_id')\n",
+    "\n",
+    "print(f'\\nDeployment ID: {deployment_id}')\n",
+    "print('(Remember this ID - you will need it to check status and destroy the deployment)')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 5. Check Deployment Status & Container Details (Free)\n",
+    "\n",
+    "After submitting the deployment, the container needs some time to start. Let's check the status."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if deployment_id:\n",
+    "    status = await call_tool('caas_get_deployment', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print(f'Status of deployment {deployment_id}:')\n",
+    "    print()\n",
+    "    pretty(status)\n",
+    "else:\n",
+    "    print('deployment_id not found. Please check the deployment result from the previous step.')\n",
+    "    print('You can set it manually: deployment_id = \"your-ID\"')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# View container/worker details\n",
+    "if deployment_id:\n",
+    "    containers = await call_tool('caas_get_deployment_containers', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print(f'Container list for deployment {deployment_id}:')\n",
+    "    print()\n",
+    "    pretty(containers)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 6. List All Deployments (Free)\n",
+    "\n",
+    "View all CaaS deployments under your account."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "all_deployments = await call_tool('caas_list_deployments', {\n",
+    "    'page': 1,\n",
+    "    'page_size': 5\n",
+    "})\n",
+    "\n",
+    "print('All my CaaS deployments:')\n",
+    "print()\n",
+    "pretty(all_deployments)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## 7. Destroy the Deployment (Save Money!)\n",
+    "\n",
+    "> **Important**: Make sure to destroy the deployment after completing the tutorial, otherwise you will continue to be charged until `duration_hours` expires!"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if deployment_id:\n",
+    "    destroy_result = await call_tool('caas_destroy_deployment', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print(f'Destroying deployment {deployment_id}:')\n",
+    "    print()\n",
+    "    pretty(destroy_result)\n",
+    "else:\n",
+    "    print('No deployment_id found.')\n",
+    "    print('If you know the ID, you can set it manually:')\n",
+    "    print('deployment_id = \"your-ID\"  # Fill in and re-run this cell')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Confirm destruction\n",
+    "if deployment_id:\n",
+    "    final_status = await call_tool('caas_get_deployment', {\n",
+    "        'deployment_id': str(deployment_id)\n",
+    "    })\n",
+    "    print('Status after destruction:')\n",
+    "    print()\n",
+    "    pretty(final_status)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## Summary\n",
+    "\n",
+    "This tutorial demonstrated the core features of the IO Cloud MCP server:\n",
+    "\n",
+    "| Tool | Purpose |\n",
+    "|------|---------|\n",
+    "| `caas_get_hardware_ids` | View CaaS supported hardware types and prices |\n",
+    "| `caas_get_price_estimate` | Estimate price before deployment |\n",
+    "| `caas_deploy_container` | Deploy a container cluster |\n",
+    "| `caas_get_deployment` | View detailed status of a single deployment |\n",
+    "| `caas_get_deployment_containers` | View containers/workers within a deployment |\n",
+    "| `caas_list_deployments` | List all deployments |\n",
+    "| `caas_destroy_deployment` | Destroy a deployment and stop billing |\n",
+    "\n",
+    "### Using with AI Agents\n",
+    "\n",
+    "All of the above operations can be performed by AI agents through natural language, for example:\n",
+    "\n",
+    "```\n",
+    "\"Find the cheapest 4-GPU H100 cluster and deploy my PyTorch image\"\n",
+    "\"List all my currently running containers\"\n",
+    "\"Destroy the tutorial-demo deployment\"\n",
+    "```"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.12.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
