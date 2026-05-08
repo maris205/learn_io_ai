@@ -26,6 +26,8 @@ This course covers the basic usage of io.net's various AI and cloud services, wi
 
 Every notebook can run directly in Google Colab — no local setup needed. Click the Colab badge in each module's README to get started.
 
+- [videos link](https://www.youtube.com/watch?v=3_0-VoOpOPU&list=PLiMaaM_gMyCFmAGwlz40PqMbkXUUkC4bT)
+
 ## Links
 
 - [io.net](https://io.net)
